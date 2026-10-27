@@ -1,0 +1,2 @@
+# Keep LF everywhere: these files run inside Linux containers, and a CRLF shell script fails there.
+* text=auto eol=lf
