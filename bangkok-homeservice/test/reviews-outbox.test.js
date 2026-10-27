@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { freshBoot, getDb } from "../test-helpers/boot.js";
 import { call } from "../test-helpers/call.js";
 import { loginSeededCustomer, loginSeededProvider, futureWeekday } from "../test-helpers/auth.js";
-import { runRelayOnce } from "../lib/modules/notifications/relay.js";
+import { runRelayOnce } from "../lib/modules/catalog/relay.js";
 
 import * as bookings from "../app/api/bookings/route.js";
 import * as confirm from "../app/api/bookings/[id]/confirm/route.js";
@@ -49,13 +49,15 @@ test("reviews + outbox eventual consistency", async (t) => {
 
     const evt = getDb().prepare("SELECT * FROM events WHERE type = 'review.created'").get();
     assert.ok(evt, "review.created outbox event exists");
+    assert.match(evt.event_id, /^[0-9a-f-]{36}$/, "event carries a uuid for consumers to dedupe on");
+    assert.equal(evt.published_at, null, "waiting for the RabbitMQ publisher");
 
     const svc = getDb().prepare("SELECT rating_avg, rating_count FROM services WHERE id = ?").get(SERVICE_ID);
     assert.equal(svc.rating_count, 0, "aggregate is STILL stale — recompute happens in the relay, not inline");
     assert.equal(svc.rating_avg, 0);
   });
 
-  await t.test("running the relay recomputes the aggregate and notifies the provider", async () => {
+  await t.test("running the relay recomputes the aggregate", async () => {
     const processed = runRelayOnce();
     assert.ok(processed > 0, "relay drained events");
 
@@ -65,9 +67,6 @@ test("reviews + outbox eventual consistency", async (t) => {
 
     const prof = getDb().prepare("SELECT rating_avg, rating_count FROM provider_profiles WHERE provider_id = ?").get(provider.id);
     assert.equal(prof.rating_count, 1, "provider aggregate recomputed too");
-
-    const note = getDb().prepare("SELECT COUNT(*) AS n FROM notifications WHERE type = 'new_review' AND recipient_id = ?").get(provider.id).n;
-    assert.equal(note, 1, "provider got a new_review notification");
   });
 
   await t.test("a duplicate review -> 409", async () => {
@@ -81,7 +80,10 @@ test("reviews + outbox eventual consistency", async (t) => {
     assert.equal(processed, 0, "no unprocessed events remain");
     const after = getDb().prepare("SELECT rating_avg, rating_count FROM services WHERE id = ?").get(SERVICE_ID);
     assert.deepEqual(after, before, "aggregate unchanged on a second relay pass");
-    const notes = getDb().prepare("SELECT COUNT(*) AS n FROM notifications WHERE type = 'new_review' AND recipient_id = ?").get(provider.id).n;
-    assert.equal(notes, 1, "no duplicate notification");
+  });
+
+  await t.test("the notifications table is gone from the monolith (owned by notification-service)", async () => {
+    const row = getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notifications'").get();
+    assert.equal(row, undefined);
   });
 });

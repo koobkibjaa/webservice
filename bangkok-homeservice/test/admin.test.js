@@ -23,7 +23,7 @@ test("admin", async (t) => {
     assert.equal(noAuth.status, 401);
   });
 
-  await t.test("admin approves the pending provider (Glow) -> is_approved + notification", async () => {
+  await t.test("admin approves the pending provider (Glow) -> is_approved + provider.approved event", async () => {
     const before = getDb().prepare("SELECT is_approved FROM provider_profiles WHERE provider_id = ?").get(glowId);
     assert.equal(before.is_approved, 0);
 
@@ -33,8 +33,9 @@ test("admin", async (t) => {
 
     const after = getDb().prepare("SELECT is_approved FROM provider_profiles WHERE provider_id = ?").get(glowId);
     assert.equal(after.is_approved, 1);
-    const note = getDb().prepare("SELECT COUNT(*) AS n FROM notifications WHERE recipient_role = 'provider' AND recipient_id = ? AND type = 'provider_approved'").get(glowId).n;
-    assert.equal(note, 1);
+    const evt = getDb().prepare("SELECT * FROM events WHERE type = 'provider.approved' AND aggregate_id = ?").get(glowId);
+    assert.ok(evt, "provider.approved outbox event written in the approval transaction");
+    assert.deepEqual(JSON.parse(evt.payload_json), { provider_id: glowId });
   });
 
   await t.test("admin sets a provider's commission", async () => {

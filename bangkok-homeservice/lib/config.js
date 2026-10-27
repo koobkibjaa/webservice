@@ -18,4 +18,8 @@ export const config = Object.freeze({
   taxPercent: 7.0,
   // Shared secret the mock payment gateway signs its webhook callbacks with.
   webhookSecret: process.env.WEBHOOK_SECRET || "edemand-webhook-secret",
+  // The broker the outbox publisher sends domain events to.
+  rabbitmqUrl: process.env.RABBITMQ_URL || "amqp://edemand:edemand-dev@localhost:5672",
+  // Where the extracted notification-service answers (in-network address, not through the gateway).
+  notificationServiceUrl: process.env.NOTIFICATION_SERVICE_URL || "http://localhost:8000",
 });
