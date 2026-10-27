@@ -10,7 +10,6 @@ PRAGMA foreign_keys = ON;
 
 DROP TABLE IF EXISTS idempotency_keys;
 DROP TABLE IF EXISTS events;
-DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS reviews;
 DROP TABLE IF EXISTS webhook_events;
 DROP TABLE IF EXISTS provider_wallets;
@@ -234,28 +233,27 @@ CREATE TABLE reviews (
 CREATE INDEX idx_reviews_service ON reviews(service_id);
 
 -- ========== Notifications ==========
-CREATE TABLE notifications (
-  id INTEGER PRIMARY KEY,
-  recipient_role TEXT NOT NULL CHECK (recipient_role IN ('customer','provider','admin')),
-  recipient_id INTEGER NOT NULL,
-  type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
-  order_id INTEGER, read_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX idx_notifications_recipient ON notifications(recipient_role, recipient_id);
+-- Extracted: the notifications table now lives in notification-service's own Postgres database.
 
 -- ========== Shared infra ==========
--- Outbox: domain events written in the SAME tx as the state change; drained by the relay.
+-- Outbox: domain events written in the SAME tx as the state change. Two independent drainers:
+--   processed_at  — the in-process rating relay (catalog/relay.js)
+--   published_at  — the RabbitMQ publisher (messaging/publisher.js)
+-- event_id is a uuid because the integer id restarts on every reseed, but consumers outside this
+-- process (and their dedupe tables) outlive a monolith reboot.
 CREATE TABLE events (
   id INTEGER PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE,
   type TEXT NOT NULL,
   aggregate_type TEXT NOT NULL,
   aggregate_id INTEGER NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  processed_at TEXT
+  processed_at TEXT,
+  published_at TEXT
 );
 CREATE INDEX idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
+CREATE INDEX idx_events_unpublished ON events(published_at) WHERE published_at IS NULL;
 
 CREATE TABLE idempotency_keys (
   key TEXT PRIMARY KEY, endpoint TEXT NOT NULL,
