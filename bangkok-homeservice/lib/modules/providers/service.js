@@ -1,12 +1,11 @@
 // Provider Profile business logic: the public directory, a provider's own editable profile, weekly
-// availability, and the admin-only approve / set-commission actions. Approval emits a
-// provider.approved event (in the same transaction as the flag flip); notification-service turns
-// it into the provider's "You're approved" notification.
+// availability, and the admin-only approve / set-commission actions. Approval writes a notification
+// to the provider (in the same transaction as the flag flip).
 import { getDb } from "../../db/index.js";
-import { insertEvent } from "../../db/events.js";
 import * as repository from "./repository.js";
 import * as identityRepository from "../identity/repository.js";
 import * as catalogRepository from "../catalog/repository.js";
+import * as notificationsRepository from "../notifications/repository.js";
 import { NotFoundError, ConflictError } from "../../errors.js";
 
 function publicProfile(provider, profile, { includeCommission = false } = {}) {
@@ -94,7 +93,14 @@ export function approveProvider(providerId) {
 
   const run = getDb().transaction(() => {
     repository.approve(providerId);
-    insertEvent("provider.approved", "provider", providerId, { provider_id: providerId });
+    notificationsRepository.insert({
+      recipientRole: "provider",
+      recipientId: providerId,
+      type: "provider_approved",
+      title: "You're approved",
+      body: "Your provider account has been approved. Your services are now visible to customers.",
+      orderId: null,
+    });
   });
   run();
   return getOwnProfile(providerId);

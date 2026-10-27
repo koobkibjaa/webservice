@@ -1,8 +1,7 @@
 // The outbox. Every state change writes an events row in the SAME transaction as the change, so a
-// crash can never leave "state changed but event lost" (or vice-versa). Two drainers read it, each
-// with its own claim column: the rating relay (processed_at) and the RabbitMQ publisher
-// (published_at). Shared infra, so it lives under lib/db rather than in any one bounded context.
-import { randomUUID } from "node:crypto";
+// crash can never leave "state changed but event lost" (or vice-versa). The notifications relay is
+// the sole consumer: it claims each row by stamping processed_at, then dispatches. Shared infra, so
+// it lives under lib/db rather than in any one bounded context.
 import { getDb } from "./index.js";
 
 // Insert a domain event. MUST be called from inside the caller's transaction so it commits or rolls
@@ -10,9 +9,9 @@ import { getDb } from "./index.js";
 export function insertEvent(type, aggregateType, aggregateId, payload) {
   return getDb()
     .prepare(
-      "INSERT INTO events (event_id, type, aggregate_type, aggregate_id, payload_json) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO events (type, aggregate_type, aggregate_id, payload_json) VALUES (?, ?, ?, ?)"
     )
-    .run(randomUUID(), type, aggregateType, aggregateId, JSON.stringify(payload)).lastInsertRowid;
+    .run(type, aggregateType, aggregateId, JSON.stringify(payload)).lastInsertRowid;
 }
 
 export function listUnprocessed(limit = 100) {
@@ -27,22 +26,6 @@ export function claim(eventId) {
   return getDb()
     .prepare(
       "UPDATE events SET processed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND processed_at IS NULL"
-    )
-    .run(eventId).changes;
-}
-
-export function listUnpublished(limit = 100) {
-  return getDb()
-    .prepare("SELECT * FROM events WHERE published_at IS NULL ORDER BY id LIMIT ?")
-    .all(limit);
-}
-
-// Stamped only AFTER the broker confirms the message, so a crash between publish and stamp means
-// the event is sent again (at-least-once). Consumers dedupe on event_id.
-export function markPublished(eventId) {
-  return getDb()
-    .prepare(
-      "UPDATE events SET published_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND published_at IS NULL"
     )
     .run(eventId).changes;
 }
