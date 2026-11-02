@@ -5,6 +5,7 @@
 // Topology: one durable topic exchange, routing key = event type (e.g. "booking.completed"). Each
 // consuming service binds its own queue to the keys it cares about.
 import amqp from "amqplib";
+import { context, propagation, ROOT_CONTEXT } from "@opentelemetry/api";
 import { listUnpublished, markPublished } from "../db/events.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -27,12 +28,17 @@ async function publishPending(channel) {
   const rows = listUnpublished(100);
   if (rows.length === 0) return 0;
   for (const event of rows) {
-    channel.publish(EXCHANGE, event.type, Buffer.from(JSON.stringify(toMessage(event))), {
-      persistent: true,
-      contentType: "application/json",
-      messageId: event.event_id,
-      type: event.type,
-    });
+    // Publish inside the trace of the request that wrote the event (saved by insertEvent); the
+    // amqplib instrumentation then puts that context in the message headers for the consumer.
+    const traced = propagation.extract(ROOT_CONTEXT, event.trace_context ? JSON.parse(event.trace_context) : {});
+    context.with(traced, () =>
+      channel.publish(EXCHANGE, event.type, Buffer.from(JSON.stringify(toMessage(event))), {
+        persistent: true,
+        contentType: "application/json",
+        messageId: event.event_id,
+        type: event.type,
+      })
+    );
   }
   await channel.waitForConfirms();
   for (const event of rows) markPublished(event.id);

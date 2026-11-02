@@ -7,6 +7,7 @@
 import json
 import uuid
 
+from opentelemetry import propagate
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   published_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS trace_context TEXT;
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   key TEXT PRIMARY KEY,
   request_hash TEXT NOT NULL,
@@ -108,9 +110,15 @@ def public_transaction(row):
 
 
 def _emit(conn, type_, aggregate_type, aggregate_id, payload):
+    # The current trace context goes with the event, so publisher.py can send it as part of the
+    # request that caused it (it is published later, outside that request).
+    carrier = {}
+    propagate.inject(carrier)
     conn.execute(
-        "INSERT INTO outbox (event_id, type, aggregate_type, aggregate_id, payload_json) VALUES (%s, %s, %s, %s, %s)",
-        (str(uuid.uuid4()), type_, aggregate_type, aggregate_id, json.dumps(payload)),
+        "INSERT INTO outbox (event_id, type, aggregate_type, aggregate_id, payload_json, trace_context) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (str(uuid.uuid4()), type_, aggregate_type, aggregate_id, json.dumps(payload),
+         json.dumps(carrier) if carrier else None),
     )
 
 

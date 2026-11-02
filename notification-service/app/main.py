@@ -9,11 +9,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import consumer, db
+from . import consumer, db, telemetry
 from .auth import get_auth
 from .errors import ApiError
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+telemetry.setup_logging()
 log = logging.getLogger("notification-service")
 
 
@@ -25,6 +25,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="notification-service", lifespan=lifespan)
+telemetry.setup_tracing(app)  # before the pool opens and the RabbitMQ threads start
+telemetry.setup_metrics(app)
 
 
 @app.middleware("http")

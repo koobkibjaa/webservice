@@ -14,9 +14,16 @@ function alreadyMigrated(db) {
   return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orders'").get());
 }
 
+// Additive changes for a kept database created by an older schema (columns only ever get added).
+function upgrade(db) {
+  const columns = db.prepare("PRAGMA table_info(events)").all().map((c) => c.name);
+  if (!columns.includes("trace_context")) db.exec("ALTER TABLE events ADD COLUMN trace_context TEXT");
+}
+
 export function bootstrapDb() {
   const db = getDb();
   if (!config.reseedOnBoot && alreadyMigrated(db)) {
+    upgrade(db);
     logger.info("existing database kept (RESEED_ON_BOOT=false)");
     return db;
   }

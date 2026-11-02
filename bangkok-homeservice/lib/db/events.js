@@ -3,16 +3,23 @@
 // with its own claim column: the rating relay (processed_at) and the RabbitMQ publisher
 // (published_at). Shared infra, so it lives under lib/db rather than in any one bounded context.
 import { randomUUID } from "node:crypto";
+import { context, propagation } from "@opentelemetry/api";
 import { getDb } from "./index.js";
 
 // Insert a domain event. MUST be called from inside the caller's transaction so it commits or rolls
-// back atomically with the state change that produced it.
+// back atomically with the state change that produced it. The current trace context (traceparent)
+// is saved with it, so the publisher can send the event as part of the request that caused it.
 export function insertEvent(type, aggregateType, aggregateId, payload) {
+  const carrier = {};
+  propagation.inject(context.active(), carrier);
   return getDb()
     .prepare(
-      "INSERT INTO events (event_id, type, aggregate_type, aggregate_id, payload_json) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO events (event_id, type, aggregate_type, aggregate_id, payload_json, trace_context) VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .run(randomUUID(), type, aggregateType, aggregateId, JSON.stringify(payload)).lastInsertRowid;
+    .run(
+      randomUUID(), type, aggregateType, aggregateId, JSON.stringify(payload),
+      carrier.traceparent ? JSON.stringify(carrier) : null
+    ).lastInsertRowid;
 }
 
 export function hasEvent(type, aggregateId) {

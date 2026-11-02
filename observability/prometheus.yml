@@ -1,0 +1,17 @@
+# Prometheus scrapes the same histogram from all three: http_request_duration_seconds.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: monolith
+    static_configs:
+      - targets: ["monolith:9464"]
+  - job_name: notification-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["notification-service:8000"]
+  - job_name: payment-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["payment-service:8000"]

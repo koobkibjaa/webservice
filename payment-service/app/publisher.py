@@ -9,6 +9,7 @@ import threading
 import time
 
 import pika
+from opentelemetry import context, propagate
 
 from . import config, db
 
@@ -30,11 +31,17 @@ def _drain(channel):
     with db.pool.connection() as conn, conn.transaction():
         rows = db.claim_unpublished(conn)
         for row in rows:
-            channel.basic_publish(
-                config.EXCHANGE, row["type"], json.dumps(_message(row)),
-                pika.BasicProperties(content_type="application/json", delivery_mode=2,
-                                     message_id=row["event_id"], type=row["type"]),
-            )  # confirm_delivery: returns only once the broker has the message
+            # Publish inside the trace saved with the row; the pika instrumentation then puts it in
+            # the message headers for the consumer.
+            token = context.attach(propagate.extract(json.loads(row["trace_context"] or "{}")))
+            try:
+                channel.basic_publish(
+                    config.EXCHANGE, row["type"], json.dumps(_message(row)),
+                    pika.BasicProperties(content_type="application/json", delivery_mode=2,
+                                         message_id=row["event_id"], type=row["type"], headers={}),
+                )  # confirm_delivery: returns only once the broker has the message
+            finally:
+                context.detach(token)
         if rows:
             db.mark_published(conn, [r["id"] for r in rows])
             log.info(json.dumps({"msg": "events published", "count": len(rows)}))

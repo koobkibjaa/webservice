@@ -19,11 +19,11 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import config, consumer, db, faults, publisher
+from . import config, consumer, db, faults, publisher, telemetry
 from .auth import get_user, require_internal
 from .errors import ApiError
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+telemetry.setup_logging()
 log = logging.getLogger("payment-service")
 
 
@@ -36,6 +36,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="payment-service", lifespan=lifespan)
+telemetry.setup_tracing(app)  # before the pool opens and the RabbitMQ threads start
+telemetry.setup_metrics(app)
 
 
 @app.middleware("http")

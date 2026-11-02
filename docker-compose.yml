@@ -45,6 +45,10 @@ services:
       # Keep the SQLite file between restarts (seed only when empty): the extracted services keep
       # their data, and a monolith that reseeded on every boot would reuse order ids they remember.
       RESEED_ON_BOOT: "false"
+      # Area E: traces to Jaeger, Prometheus metrics on 9464 (in-network only).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: monolith
+      METRICS_PORT: "9464"
     volumes:
       - monolith-data:/app/data
     depends_on:
@@ -69,6 +73,8 @@ services:
       KEYCLOAK_ISSUER: http://localhost:8180/realms/homeservice
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/homeservice/protocol/openid-connect/certs
       TOKEN_AUDIENCE: notification-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: notification-service
     depends_on:
       notification-db:
         condition: service_healthy
@@ -86,6 +92,8 @@ services:
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/homeservice/protocol/openid-connect/certs
       TOKEN_AUDIENCE: payment-service
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-edemand-webhook-secret}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: payment-service
     depends_on:
       payment-db:
         condition: service_healthy
@@ -157,6 +165,40 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 15
+
+  # ---------- Area E: observability ----------
+  # Traces: every service sends OTLP to Jaeger, which keeps them in memory.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports:
+      - "16686:16686"   # Jaeger UI (a tool screen): http://localhost:16686
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      MEMORY_MAX_TRACES: "20000"
+
+  # Metrics: scrapes http_request_duration_seconds from the monolith and both services.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"     # Prometheus UI (a tool screen): http://localhost:9090
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # Dashboard "Services: rate, errors, response time", provisioned from observability/grafana.
+  grafana:
+    image: grafana/grafana:11.2.2
+    ports:
+      - "3000:3000"     # Grafana (a tool screen): http://localhost:3000, anonymous viewing on
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin-dev}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/services.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
 
 volumes:
   monolith-data:

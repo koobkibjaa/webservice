@@ -211,7 +211,8 @@ CREATE TABLE events (
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   processed_at TEXT,
-  published_at TEXT
+  published_at TEXT,
+  trace_context TEXT   -- JSON {traceparent} of the request that caused it (Area E)
 );
 CREATE INDEX idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
 CREATE INDEX idx_events_unpublished ON events(published_at) WHERE published_at IS NULL;
