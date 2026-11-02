@@ -78,6 +78,54 @@ redelivered event changes nothing.
 | rabbitmq | — | — |
 | keycloak | `keycloak/realm-homeservice.json` (imported on first boot) | its own, inside the container |
 
+## The four demo scripts
+
+Run from the repository root once `docker compose ps` shows every service healthy. Each prints
+PASS/FAIL lines, exits 0 when everything is as expected, and can be run again.
+
+| Script | Shows | Expected output |
+|---|---|---|
+| `bash scripts/beat1-happy-path.sh` | a booking paid by gateway and completed, across every boundary | below |
+| `bash scripts/beat2-failure-recovery.sh` | each of the three faults survived with exactly one effect | [Area D](#area-d--survive-failure-how-to-check-it) |
+| `bash scripts/beat3-auth-rejection.sh` | forged, expired, wrong-audience tokens refused with 401, both services | [Area B](#area-b--secure-how-to-check-it) |
+| `bash scripts/beat4-find-the-trace.sh` | the same request as one trace in Jaeger | [Area E](#area-e--observe-and-ship-how-to-check-it) |
+
+### `scripts/beat1-happy-path.sh`
+
+Nong books a sofa clean with Sparkle and pays by gateway; Sparkle confirms, starts and completes
+the job with Nong's OTP. Each step names the boundaries it crosses and checks the owning service.
+Expected output (booking ids, dates, OTP and the wallet balance differ), exit code 0:
+
+```
+== 1. Nong and Sparkle log in
+   crosses: gateway -> monolith (password check) -> Keycloak (token for the services)
+   PASS  Nong has a monolith token / a Keycloak token, Sparkle has a Keycloak token
+== 2. Nong books Sofa Shampoo with Sparkle, paying by gateway
+   crosses: gateway -> monolith (order, slot holds) -> payment-service over HTTP (payment intent) -> monolith outbox
+   booking #8036 on 2026-11-06 at 10:30, total 64200 cents, OTP 493932
+   PASS  booking answer                                 201
+   PASS  payment intent from payment-service            requires_payment
+== 3. Nong pays
+   crosses: gateway -> payment-service (charge, outbox) -> RabbitMQ -> monolith (order paid) and notification-service
+   PASS  payment settled                                true
+   PASS  monolith order marked paid (event)             paid
+== 4. Sparkle confirms, starts and completes the job with Nong's OTP
+   crosses: gateway -> monolith (status machine, outbox) -> RabbitMQ -> payment-service and notification-service
+   PASS  confirm 200 / start 200 / complete with the OTP 200
+   Sparkle earns 54570 cents (commission 9630)
+== 5. Sparkle's wallet has the earnings
+   crosses: gateway -> payment-service (credited from booking.completed)
+   PASS  balance went up by 54570                       <previous balance + 54570>
+== 6. Nong's notifications tell the story
+   crosses: gateway -> notification-service (built from the booking events)
+   PASS  Nong's notifications for #8036                 4
+     Booking completed / How did it go? / Booking started / Booking confirmed
+== 7. Nong's transactions
+   crosses: gateway -> payment-service
+   PASS  a charge for #8036                             charge
+All checks passed.
+```
+
 ## Area A — extract and route: how to check it
 
 1. **Same addresses still work.** Log in at http://localhost:8080 as `nong@example.com`, make a
