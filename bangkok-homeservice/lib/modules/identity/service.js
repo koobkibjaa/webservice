@@ -32,7 +32,8 @@ export function loginCustomer({ email, password }) {
     throw new UnauthorizedError("invalid email or password");
   }
   const token = signToken({ sub: customer.id, role: "customer", email: customer.email });
-  return { token, customer: publicCustomer(customer) };
+  const subject = { role: "customer", id: customer.id, email: customer.email, name: customer.name };
+  return { token, subject, customer: publicCustomer(customer) };
 }
 
 export function registerProvider({ email, password, name, phone, company_name }) {
@@ -57,7 +58,8 @@ export function loginProvider({ email, password }) {
   }
   const profile = providersRepository.findProfile(provider.id);
   const token = signToken({ sub: provider.id, role: "provider", email: provider.email });
-  return { token, is_approved: profile ? Boolean(profile.is_approved) : false };
+  const subject = { role: "provider", id: provider.id, email: provider.email, name: provider.name };
+  return { token, subject, is_approved: profile ? Boolean(profile.is_approved) : false };
 }
 
 export function loginAdmin({ email, password }) {
@@ -66,7 +68,8 @@ export function loginAdmin({ email, password }) {
     throw new UnauthorizedError("invalid email or password");
   }
   const token = signToken({ sub: admin.id, role: "admin", email: admin.email });
-  return { token };
+  const subject = { role: "admin", id: admin.id, email: admin.email, name: admin.name };
+  return { token, subject };
 }
 
 // The /me projection, role-appropriate.

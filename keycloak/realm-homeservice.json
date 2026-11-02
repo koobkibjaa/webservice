@@ -1,0 +1,347 @@
+{
+  "realm": "homeservice",
+  "enabled": true,
+  "sslRequired": "none",
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": true,
+  "registrationAllowed": false,
+  "accessTokenLifespan": 300,
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\": [{\"name\": \"username\", \"displayName\": \"${username}\", \"validations\": {\"length\": {\"min\": 3, \"max\": 255}, \"username-prohibited-characters\": {}, \"up-username-not-idn-homograph\": {}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"email\", \"displayName\": \"${email}\", \"validations\": {\"email\": {}, \"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"firstName\", \"displayName\": \"${firstName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"lastName\", \"displayName\": \"${lastName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"app_user_id\", \"displayName\": \"app_user_id\", \"permissions\": {\"view\": [\"admin\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"app_role\", \"displayName\": \"app_role\", \"permissions\": {\"view\": [\"admin\"], \"edit\": [\"admin\"]}, \"multivalued\": false}], \"groups\": []}"
+          ]
+        }
+      }
+    ]
+  },
+  "requiredActions": [
+    {
+      "alias": "VERIFY_PROFILE",
+      "name": "Verify Profile",
+      "providerId": "VERIFY_PROFILE",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 90,
+      "config": {}
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "homeservice-identity",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "app_user_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "app_user_id",
+            "claim.name": "app_user_id",
+            "jsonType.label": "int",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "app_role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "app_role",
+            "claim.name": "app_role",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "notification-service-audience",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience notification-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "notification-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reporting-service-audience",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience reporting-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "reporting-service",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "homeservice-monolith",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": [
+        "homeservice-identity",
+        "notification-service-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.lifespan": "43200"
+      },
+      "secret": "${KEYCLOAK_CLIENT_SECRET:monolith-dev-secret}",
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret"
+    },
+    {
+      "clientId": "homeservice-mobile",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": [
+        "homeservice-identity",
+        "notification-service-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {}
+    },
+    {
+      "clientId": "expiry-demo",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": [
+        "homeservice-identity",
+        "notification-service-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "access.token.lifespan": "3"
+      }
+    },
+    {
+      "clientId": "reporting-app",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "defaultClientScopes": [
+        "homeservice-identity",
+        "reporting-service-audience"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {}
+    }
+  ],
+  "users": [
+    {
+      "username": "customer-1",
+      "email": "nong@example.com",
+      "emailVerified": true,
+      "firstName": "Nong Napat",
+      "lastName": "customer",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "1"
+        ],
+        "app_role": [
+          "customer"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "customer-2",
+      "email": "somchai@example.com",
+      "emailVerified": true,
+      "firstName": "Somchai Boon",
+      "lastName": "customer",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "2"
+        ],
+        "app_role": [
+          "customer"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "customer-3",
+      "email": "aom@example.com",
+      "emailVerified": true,
+      "firstName": "Aom Piyada",
+      "lastName": "customer",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "3"
+        ],
+        "app_role": [
+          "customer"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "provider-1",
+      "email": "sparkle@example.com",
+      "emailVerified": true,
+      "firstName": "Sparkle Cleaners",
+      "lastName": "provider",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "1"
+        ],
+        "app_role": [
+          "provider"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "provider-2",
+      "email": "fixit@example.com",
+      "emailVerified": true,
+      "firstName": "FixIt Bros",
+      "lastName": "provider",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "2"
+        ],
+        "app_role": [
+          "provider"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "provider-3",
+      "email": "glow@example.com",
+      "emailVerified": true,
+      "firstName": "Glow Beauty",
+      "lastName": "provider",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "3"
+        ],
+        "app_role": [
+          "provider"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "admin-1",
+      "email": "admin@edemand.test",
+      "emailVerified": true,
+      "firstName": "Ops Admin",
+      "lastName": "admin",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "1"
+        ],
+        "app_role": [
+          "admin"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "eDemand-2026!",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "service-account-homeservice-monolith",
+      "enabled": true,
+      "serviceAccountClientId": "homeservice-monolith",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users"
+        ]
+      }
+    }
+  ]
+}

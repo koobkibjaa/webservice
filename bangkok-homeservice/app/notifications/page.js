@@ -7,10 +7,12 @@ import { config } from "#lib/config.js";
 import { ActionButton } from "../_ui/client.js";
 
 // Notifications are owned by notification-service now, so this page reads them over HTTP with the
-// user's own token instead of calling a service module in-process. If the service is down the rest
-// of the monolith keeps working and only this page degrades.
+// user's own Keycloak token (the kc_token cookie set at login) instead of calling a service module
+// in-process. If the service is down, or there is no Keycloak token, the rest of the monolith keeps
+// working and only this page degrades.
 async function fetchNotifications() {
-  const token = cookies().get("edemand_token")?.value;
+  const token = cookies().get("kc_token")?.value;
+  if (!token) return null;
   try {
     const res = await fetch(`${config.notificationServiceUrl}/api/notifications`, {
       headers: { authorization: `Bearer ${token}` },
@@ -32,7 +34,7 @@ export default async function NotificationsPage() {
   return (
     <div>
       <h1>Notifications</h1>
-      {list === null ? <p className="muted">Notifications are unavailable right now. Try again shortly.</p>
+      {list === null ? <p className="muted">Notifications are unavailable right now. Try again shortly, or sign out and in again.</p>
         : list.length === 0 ? <p className="muted">Nothing here yet.</p> : (
         <ul className="plain">
           {list.map((n) => (

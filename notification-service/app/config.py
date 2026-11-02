@@ -7,9 +7,12 @@ DATABASE_URL = os.environ.get(
 )
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL", "amqp://edemand:edemand-dev@localhost:5672/")
 
-# Area A: the monolith's own HS256 JWT, verified with the shared secret. Area B replaces this
-# with Keycloak-issued tokens checked against Keycloak's public keys.
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev secret - do not use in production")
+# Area B: Keycloak-issued tokens, checked against Keycloak's public keys (see auth.py).
+KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://localhost:8180/realms/homeservice")
+KEYCLOAK_JWKS_URL = os.environ.get(
+    "KEYCLOAK_JWKS_URL", "http://localhost:8180/realms/homeservice/protocol/openid-connect/certs"
+)
+TOKEN_AUDIENCE = os.environ.get("TOKEN_AUDIENCE", "notification-service")
 
 EXCHANGE = "edemand.events"
 QUEUE = "notification-service.events"

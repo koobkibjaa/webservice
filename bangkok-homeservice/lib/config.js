@@ -22,4 +22,9 @@ export const config = Object.freeze({
   rabbitmqUrl: process.env.RABBITMQ_URL || "amqp://edemand:edemand-dev@localhost:5672",
   // Where the extracted notification-service answers (in-network address, not through the gateway).
   notificationServiceUrl: process.env.NOTIFICATION_SERVICE_URL || "http://localhost:8000",
+  // Keycloak issues the tokens the extracted services accept (in-network address).
+  keycloakUrl: process.env.KEYCLOAK_URL || "http://localhost:8180",
+  keycloakRealm: process.env.KEYCLOAK_REALM || "homeservice",
+  keycloakClientId: process.env.KEYCLOAK_CLIENT_ID || "homeservice-monolith",
+  keycloakClientSecret: process.env.KEYCLOAK_CLIENT_SECRET || "monolith-dev-secret",
 });

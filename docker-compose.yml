@@ -36,8 +36,14 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-edemand-webhook-secret}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-edemand}:${RABBITMQ_PASSWORD:-edemand-dev}@rabbitmq:5672
       NOTIFICATION_SERVICE_URL: http://notification-service:8000
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: homeservice
+      KEYCLOAK_CLIENT_ID: homeservice-monolith
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-monolith-dev-secret}
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
@@ -52,7 +58,10 @@ services:
     environment:
       DATABASE_URL: postgresql://notifications:${NOTIFICATION_DB_PASSWORD:-notifications-dev}@notification-db:5432/notifications
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-edemand}:${RABBITMQ_PASSWORD:-edemand-dev}@rabbitmq:5672/
-      JWT_SECRET: ${JWT_SECRET:-dev secret - do not use in production}
+      # Area B: tokens are Keycloak's. iss is the public address; the keys are fetched in-network.
+      KEYCLOAK_ISSUER: http://localhost:8180/realms/homeservice
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/homeservice/protocol/openid-connect/certs
+      TOKEN_AUDIENCE: notification-service
     depends_on:
       notification-db:
         condition: service_healthy
@@ -88,6 +97,28 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 10
+
+  # Area B: the identity provider. Imports keycloak/realm-homeservice.json on first boot.
+  # --hostname pins the token issuer to the public address, so a token fetched from the host
+  # (scripts, mobile) and one fetched in-network (the monolith) carry the same iss.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--hostname=http://localhost:8180",
+              "--hostname-backchannel-dynamic=true", "--health-enabled=true"]
+    ports:
+      - "8180:8080"     # Keycloak admin console (a tool screen): http://localhost:8180
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-monolith-dev-secret}   # read by the realm file
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 15
 
 volumes:
   notification-db-data:

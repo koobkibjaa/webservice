@@ -61,3 +61,21 @@ export function tokenCookie(token) {
 export function clearCookie() {
   return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
+
+// The Keycloak access token for the extracted services, carried by the browser beside the
+// monolith's own cookie and expiring with the token itself. The gateway forwards it to them.
+const KC_COOKIE = "kc_token";
+export function kcTokenCookie({ access_token, expires_in }) {
+  return `${KC_COOKIE}=${access_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${expires_in}`;
+}
+export function clearKcCookie() {
+  return `${KC_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+// One login response for all three roles: the monolith token as before, plus `keycloak_token`
+// (null if Keycloak was unreachable) for API clients such as the mobile app.
+export function loginResponse(json, body, kc) {
+  const res = json({ ...body, keycloak_token: kc?.access_token ?? null }, { status: 200, headers: { "Set-Cookie": tokenCookie(body.token) } });
+  if (kc) res.headers.append("Set-Cookie", kcTokenCookie(kc));
+  return res;
+}
