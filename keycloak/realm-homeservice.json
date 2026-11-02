@@ -193,7 +193,8 @@
       "directAccessGrantsEnabled": true,
       "defaultClientScopes": [
         "homeservice-identity",
-        "notification-service-audience"
+        "notification-service-audience",
+        "payment-service-audience"
       ],
       "optionalClientScopes": [],
       "attributes": {
