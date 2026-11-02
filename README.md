@@ -1,7 +1,8 @@
 # DES428 capstone — bangkok-homeservice, migrated
 
-The bangkok-homeservice monolith (Next.js + SQLite) with its **Notifications** context extracted
-into its own service, behind an nginx gateway.
+The bangkok-homeservice monolith (Next.js + SQLite) with two contexts extracted into their own
+services behind an nginx gateway: **Notifications** (read side, fed by events) and **Payments &
+Wallet** (moves money; a saga with the monolith's Booking).
 
 ## Run it
 
@@ -31,7 +32,7 @@ docker compose down -v --remove-orphans
 | Ops Admin | `admin@edemand.test` | `admin-1` |
 
 Logging in to the monolith also returns a `keycloak_token` (and sets a `kc_token` cookie): that is
-the token notification-service accepts. Someone who registers later is created in Keycloak on
+the token notification-service and payment-service accept. Someone who registers later is created in Keycloak on
 their first login. To get a token straight from Keycloak, as the mobile app would:
 
 ```bash
@@ -40,8 +41,9 @@ curl -s -X POST http://localhost:8180/realms/homeservice/protocol/openid-connect
   --data-urlencode 'password=eDemand-2026!'
 ```
 
-The monolith reseeds its database on every boot; notification-service's Postgres and Keycloak keep their data
-until `docker compose down -v`.
+Every database (the monolith's SQLite file, both services' Postgres, Keycloak's) keeps its data
+across restarts and is reset together by `docker compose down -v`. The monolith seeds only an
+empty database, so after a reset the first booking is again #8001.
 
 ## What runs
 
@@ -49,18 +51,27 @@ until `docker compose down -v`.
 browser / mobile app
         │ :8080
      gateway (nginx)
-        ├── /api/notifications, /api/notifications/{id}/read ──► notification-service (FastAPI)
-        │                                                          │  owns notification-db (Postgres)
-        └── everything else ──► monolith (Next.js, SQLite)         │
-                                  │ outbox `events` table          │
-                                  └── publisher ──► RabbitMQ ──────┘ consumer (dedupes on event_id)
+        ├── /api/notifications*                      ──► notification-service (FastAPI) ── notification-db
+        ├── /api/payments/{webhook,simulate},
+        │   /api/provider/wallet,
+        │   /api/customer/transactions               ──► payment-service (FastAPI) ─────── payment-db
+        └── everything else ──► monolith (Next.js, SQLite)            ▲ HTTP /internal/payment-intents
+                                  │  └─────────────────────────────────┘ (place-booking saga, step 2)
+                                  │
+            monolith outbox ──► RabbitMQ ──► notification-service: every booking/review/payment event
+                                         ──► payment-service:      booking.completed, booking.cancelled
+            payment-service outbox ──► RabbitMQ ──► monolith:      payment.succeeded (order marked paid)
 ```
+
+Every consumer dedupes on the event's `event_id` in the same transaction as its effect, so a
+redelivered event changes nothing.
 
 | Service | Folder | Database |
 |---|---|---|
 | gateway | `gateway/nginx.conf` | — |
-| monolith | `bangkok-homeservice/` | SQLite inside the container |
+| monolith | `bangkok-homeservice/` | SQLite file in the `monolith-data` volume |
 | notification-service | `notification-service/` | `notification-db` (Postgres 16) |
+| payment-service | `payment-service/` | `payment-db` (Postgres 16) |
 | rabbitmq | — | — |
 | keycloak | `keycloak/realm-homeservice.json` (imported on first boot) | its own, inside the container |
 
@@ -82,6 +93,26 @@ browser / mobile app
 3. **A duplicate delivery makes one effect.** Re-publish an already-applied event from the
    RabbitMQ screen (exchange `edemand.events`); `docker compose logs notification-service` shows
    `duplicate event skipped` and the notification count does not change.
+
+### Payments (the second seam, which changes data)
+
+4. **Pay for a booking, at the same addresses.** As Nong, book with *Payment: gateway* and press
+   *Pay now (simulate)*. `POST /api/payments/simulate` is served by payment-service; the
+   monolith's order turns `paid` when payment-service's `payment.succeeded` event arrives.
+5. **The wallet moved.** As Sparkle, confirm, start and complete that booking with Nong's OTP, then
+   open *Wallet*: the earnings are there, read from payment-service.
+   ```bash
+   docker compose exec payment-db psql -U payments -c "select provider_id, balance_cents, commission_owed_cents from provider_wallets"
+   docker compose exec monolith node -e "const D=require('better-sqlite3');console.log(new D('/app/data/edemand.db').prepare(\"select name from sqlite_master where name in ('payment_intents','transactions','provider_wallets','webhook_events')\").all())"
+   # []
+   ```
+6. **The place-booking saga compensates.** Stop payment-service and place a gateway booking:
+   ```bash
+   docker compose stop payment-service
+   # book with payment_method "gateway" -> 503 "payment service unavailable; the booking was not
+   # placed and the slot was released"; the order is cancelled and the slot can be booked again
+   docker compose start payment-service
+   ```
 
 ## Area B — secure: how to check it
 

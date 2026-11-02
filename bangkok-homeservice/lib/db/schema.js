@@ -11,10 +11,6 @@ PRAGMA foreign_keys = ON;
 DROP TABLE IF EXISTS idempotency_keys;
 DROP TABLE IF EXISTS events;
 DROP TABLE IF EXISTS reviews;
-DROP TABLE IF EXISTS webhook_events;
-DROP TABLE IF EXISTS provider_wallets;
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS payment_intents;
 DROP TABLE IF EXISTS bids;
 DROP TABLE IF EXISTS slot_holds;
 DROP TABLE IF EXISTS order_items;
@@ -180,44 +176,9 @@ CREATE TABLE bids (
 CREATE INDEX idx_bids_job ON bids(job_request_id);
 
 -- ========== Payments & Wallet ==========
-CREATE TABLE payment_intents (
-  id INTEGER PRIMARY KEY,
-  order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
-  amount_cents INTEGER NOT NULL,
-  gateway_ref TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL DEFAULT 'requires_payment'
-        CHECK (status IN ('requires_payment','succeeded','failed')),
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE TABLE transactions (
-  id INTEGER PRIMARY KEY,
-  order_id INTEGER REFERENCES orders(id),
-  customer_id INTEGER, provider_id INTEGER,
-  kind TEXT NOT NULL CHECK (kind IN ('charge','payout_credit','commission_owed','refund')),
-  amount_cents INTEGER NOT NULL,
-  method TEXT NOT NULL CHECK (method IN ('cod','gateway')),
-  gateway_ref TEXT,
-  status TEXT NOT NULL DEFAULT 'succeeded' CHECK (status IN ('pending','succeeded','failed','refunded')),
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX idx_transactions_provider ON transactions(provider_id);
-CREATE INDEX idx_transactions_order ON transactions(order_id);
-
-CREATE TABLE provider_wallets (
-  provider_id INTEGER PRIMARY KEY REFERENCES providers(id) ON DELETE CASCADE,
-  balance_cents INTEGER NOT NULL DEFAULT 0,
-  commission_owed_cents INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-
--- Webhook idempotency: the gateway's event id is the dedupe key. UNIQUE = a replay cannot double-credit.
-CREATE TABLE webhook_events (
-  id INTEGER PRIMARY KEY,
-  gateway_event_id TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL, payload_json TEXT NOT NULL,
-  received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  processed_at TEXT
-);
+-- Extracted: payment_intents, transactions, provider_wallets and webhook_events now live in
+-- payment-service's own Postgres database. orders.payment_status stays here (Booking owns it) and
+-- is set from payment-service's payment.succeeded event.
 
 -- ========== Reviews ==========
 CREATE TABLE reviews (

@@ -10,5 +10,7 @@ export async function register() {
     startRelay();
     const { startPublisher } = await import("./lib/messaging/publisher.js");
     startPublisher();
+    const { startConsumer } = await import("./lib/messaging/consumer.js");
+    startConsumer();
   }
 }

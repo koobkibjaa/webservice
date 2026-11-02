@@ -152,8 +152,11 @@ export function rescheduleAtomic(orderId, serviceDate, startingTime, endingTime,
     )
     .run(serviceDate, startingTime, endingTime, durationMin, orderId).changes;
 }
+// Conditional, so a redelivered payment.succeeded matches 0 rows: applying it twice is a no-op.
 export function markPaid(orderId) {
-  return getDb().prepare("UPDATE orders SET payment_status = 'paid' WHERE id = ?").run(orderId).changes;
+  return getDb()
+    .prepare("UPDATE orders SET payment_status = 'paid' WHERE id = ? AND payment_status = 'pending' AND status != 'cancelled'")
+    .run(orderId).changes;
 }
 export function markRefunded(orderId) {
   return getDb().prepare("UPDATE orders SET payment_status = 'refunded' WHERE id = ?").run(orderId).changes;

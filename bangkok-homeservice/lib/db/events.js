@@ -15,6 +15,12 @@ export function insertEvent(type, aggregateType, aggregateId, payload) {
     .run(randomUUID(), type, aggregateType, aggregateId, JSON.stringify(payload)).lastInsertRowid;
 }
 
+export function hasEvent(type, aggregateId) {
+  return Boolean(
+    getDb().prepare("SELECT 1 FROM events WHERE type = ? AND aggregate_id = ? LIMIT 1").get(type, aggregateId)
+  );
+}
+
 export function listUnprocessed(limit = 100) {
   return getDb()
     .prepare("SELECT * FROM events WHERE processed_at IS NULL ORDER BY id LIMIT ?")

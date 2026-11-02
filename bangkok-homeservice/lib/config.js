@@ -16,8 +16,12 @@ export const config = Object.freeze({
   firstOrderId: 8001,
   // One flat tax rate, snapshotted onto each order_item at booking time (tax-excluded).
   taxPercent: 7.0,
-  // Shared secret the mock payment gateway signs its webhook callbacks with.
-  webhookSecret: process.env.WEBHOOK_SECRET || "edemand-webhook-secret",
+  // false = keep an existing database file and seed only an empty one (docker-compose sets this,
+  // because the extracted services keep their data across restarts). Default true: drop and
+  // reseed on every boot, the original behaviour, still used by `npm run dev` and the tests.
+  reseedOnBoot: process.env.RESEED_ON_BOOT !== "false",
+  // Where the extracted payment-service answers (in-network address, not through the gateway).
+  paymentServiceUrl: process.env.PAYMENT_SERVICE_URL || "http://localhost:8001",
   // The broker the outbox publisher sends domain events to.
   rabbitmqUrl: process.env.RABBITMQ_URL || "amqp://edemand:edemand-dev@localhost:5672",
   // Where the extracted notification-service answers (in-network address, not through the gateway).

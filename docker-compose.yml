@@ -20,6 +20,8 @@ services:
         condition: service_healthy
       notification-service:
         condition: service_healthy
+      payment-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/gateway-health"]
       interval: 10s
@@ -33,13 +35,18 @@ services:
       target: runtime
     environment:
       JWT_SECRET: ${JWT_SECRET:-dev secret - do not use in production}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-edemand-webhook-secret}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-edemand}:${RABBITMQ_PASSWORD:-edemand-dev}@rabbitmq:5672
       NOTIFICATION_SERVICE_URL: http://notification-service:8000
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: homeservice
       KEYCLOAK_CLIENT_ID: homeservice-monolith
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-monolith-dev-secret}
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+      # Keep the SQLite file between restarts (seed only when empty): the extracted services keep
+      # their data, and a monolith that reseeded on every boot would reuse order ids they remember.
+      RESEED_ON_BOOT: "false"
+    volumes:
+      - monolith-data:/app/data
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -67,6 +74,37 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+
+  # Area A (second seam): the Payments & Wallet context, extracted. Owns payment-db; receives
+  # booking events through RabbitMQ and emits payment.succeeded through its own outbox.
+  payment-service:
+    build: ./payment-service
+    environment:
+      DATABASE_URL: postgresql://payments:${PAYMENT_DB_PASSWORD:-payments-dev}@payment-db:5432/payments
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-edemand}:${RABBITMQ_PASSWORD:-edemand-dev}@rabbitmq:5672/
+      KEYCLOAK_ISSUER: http://localhost:8180/realms/homeservice
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/homeservice/protocol/openid-connect/certs
+      TOKEN_AUDIENCE: payment-service
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-edemand-webhook-secret}
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  payment-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD:-payments-dev}
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   notification-db:
     image: postgres:16-alpine
@@ -121,5 +159,7 @@ services:
       retries: 15
 
 volumes:
+  monolith-data:
+  payment-db-data:
   notification-db-data:
   rabbitmq-data:

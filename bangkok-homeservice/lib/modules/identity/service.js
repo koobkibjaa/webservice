@@ -1,7 +1,8 @@
 // Identity business logic: registration, login, and the /me projection for each role. Password
 // hashing (bcryptjs, synchronous) and JWT issuance live here, at the service layer, not in routes.
-// A provider register is one transaction that also creates the provider_profiles + provider_wallets
-// rows, so a provider can never exist without its profile/wallet.
+// A provider register is one transaction that also creates the provider_profiles row, so a
+// provider can never exist without its profile. (The wallet is payment-service's; it creates one
+// the first time money reaches the provider.)
 import bcrypt from "bcryptjs";
 import { config } from "../../config.js";
 import { getDb } from "../../db/index.js";
@@ -44,7 +45,6 @@ export function registerProvider({ email, password, name, phone, company_name })
   const create = getDb().transaction(() => {
     const id = repository.insertProvider({ email, passwordHash, name, phone });
     repository.insertProviderProfile(id, company_name);
-    repository.insertProviderWallet(id);
     return id;
   });
   const id = create();

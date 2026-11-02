@@ -3,18 +3,22 @@
 //   awaiting|confirmed -> cancelled          (releases slot_holds, refunds a paid gateway order)
 //   * -> rescheduled                         (re-holds slots atomically)
 // Every transition writes an events row in the SAME transaction as the state change (the outbox).
-// Place-booking is one .immediate() transaction (order + items + slot_holds + optional payment
-// intent + outbox); completion is OTP-gated with an exactly-once wallet credit.
-import { randomUUID } from "node:crypto";
+// Place-booking is one .immediate() transaction (order + items + slot_holds + outbox) for cash;
+// a gateway booking is a saga across payment-service (see placeBooking). Money no longer moves
+// here: completion and cancellation emit booking.completed / booking.cancelled, and
+// payment-service credits the wallet or records the refund exactly once when it receives them.
 import { getDb } from "../../db/index.js";
 import { withIdempotency } from "../../db/idempotency.js";
-import { insertEvent } from "../../db/events.js";
+import { insertEvent, hasEvent } from "../../db/events.js";
+import { logger } from "../../logger.js";
 import * as repository from "./repository.js";
 import * as catalogRepository from "../catalog/repository.js";
 import * as providersRepository from "../providers/repository.js";
-import * as paymentsRepository from "../payments/repository.js";
+import * as paymentClient from "./paymentClient.js";
 import { slotRange, timeToMinutes, minutesToTime, weekdayOf, todayDate } from "./slots.js";
-import { NotFoundError, ForbiddenError, ConflictError, BadRequestError } from "../../errors.js";
+import {
+  NotFoundError, ForbiddenError, ConflictError, BadRequestError, ServiceUnavailableError,
+} from "../../errors.js";
 
 const PLACE_ENDPOINT = "POST /api/bookings";
 
@@ -47,16 +51,6 @@ export function toPublicOrder(row) {
   };
 }
 
-function publicIntent(row) {
-  if (!row) return undefined;
-  return {
-    id: row.id,
-    order_id: row.order_id,
-    amount_cents: row.amount_cents,
-    gateway_ref: row.gateway_ref,
-    status: row.status,
-  };
-}
 
 function assertParticipant(order, auth) {
   const isCustomer = auth.role === "customer" && order.customer_id === auth.sub;
@@ -86,8 +80,84 @@ function validateWindow(providerId, date, startingTime, durationMin) {
   return minutesToTime(end);
 }
 
-// ---------- the place-booking transaction ----------
-export function placeBooking(customerId, input, idempotencyKey) {
+// ---------- the place-booking saga ----------
+// A cash (COD) booking is still one local transaction. A gateway booking also needs a payment
+// intent, which payment-service now owns, so it runs as an orchestrated saga with Booking as the
+// orchestrator:
+//   1.  local tx: order + items + slot holds (the slot is reserved; nobody is told yet)
+//   2.  payment-service: create the intent (idempotent on the order id)
+//   3a. ok   -> local tx: announce the booking (outbox event) -> 201 with the intent
+//   3b. fail -> compensating local tx: cancel the order, release the slots, emit booking.cancelled
+//               (payment-service cancels any intent that did get created) -> 503
+export async function placeBooking(customerId, input, idempotencyKey) {
+  const placed = placeLocal(customerId, input, idempotencyKey);
+  if (input.payment_method !== "gateway" || placed.statusCode !== 201) return placed;
+
+  const order = repository.findOrderById(placed.body.order.id);
+  if (order.status === "cancelled") {
+    // A replayed Idempotency-Key for a booking whose saga already failed and was compensated.
+    throw new ConflictError("this booking was cancelled because payment setup failed; place it again with a new Idempotency-Key");
+  }
+  let intent;
+  try {
+    intent = await paymentClient.createIntent(order);
+  } catch (err) {
+    compensatePlacement(order, err);
+    throw new ServiceUnavailableError("payment service unavailable; the booking was not placed and the slot was released");
+  }
+  announcePlacement(order);
+  return {
+    statusCode: 201,
+    body: { ...placed.body, order: toPublicOrder(repository.findOrderById(order.id)), payment_intent: intent },
+  };
+}
+
+// Step 3a. Guarded, so a replay of an already-announced booking does not announce it twice.
+function announcePlacement(order) {
+  getDb().transaction(() => {
+    if (hasEvent("booking.status_changed", order.id)) return;
+    insertEvent("booking.status_changed", "order", order.id, {
+      order_id: order.id, from: null, to: "awaiting",
+      customer_id: order.customer_id, provider_id: order.provider_id, actor_role: "customer",
+    });
+  }).immediate();
+}
+
+// Step 3b, the compensating action: undo step 1.
+function compensatePlacement(order, err) {
+  logger.warn({ orderId: order.id, err: err.message }, "place-booking saga: payment intent failed, compensating");
+  getDb().transaction(() => {
+    repository.cancelAtomic(order.id, order.customer_id);
+    repository.deleteSlotHoldsForOrder(order.id);
+    insertEvent("booking.cancelled", "order", order.id, {
+      order_id: order.id, customer_id: order.customer_id, provider_id: order.provider_id,
+      total_cents: order.total_cents, payment_method: order.payment_method, refunded: false,
+      reason: "payment_setup_failed",
+    });
+  }).immediate();
+}
+
+// payment.succeeded from payment-service (lib/messaging/consumer.js). It used to be a direct
+// UPDATE of this table from inside the webhook. markPaid is conditional, so a redelivery is a
+// no-op. If the customer cancelled before the payment landed, the money has to go back: the order
+// is marked refunded and booking.cancelled (refunded: true) tells payment-service to record it.
+export function applyPaymentSucceeded({ order_id }) {
+  getDb().transaction(() => {
+    const order = repository.findOrderById(order_id);
+    if (!order || repository.markPaid(order_id) === 1) return;
+    if (order.status === "cancelled" && order.payment_status === "pending") {
+      repository.markRefunded(order_id);
+      insertEvent("booking.cancelled", "order", order_id, {
+        order_id, customer_id: order.customer_id, provider_id: order.provider_id,
+        total_cents: order.total_cents, payment_method: order.payment_method, refunded: true,
+        reason: "paid_after_cancel",
+      });
+    }
+  }).immediate();
+}
+
+// Step 1 (and the whole of a cash booking).
+function placeLocal(customerId, input, idempotencyKey) {
   const { statusCode, body } = withIdempotency(idempotencyKey, PLACE_ENDPOINT, () => {
     // (idempotency keys are scoped to this customer — see the actor arg passed below)
     // 1. Load services; assert same provider, provider approved, status=1.
@@ -170,31 +240,23 @@ export function placeBooking(customerId, input, idempotencyKey) {
       repository.insertSlotHold(input.provider_id, input.service_date, slot, orderId);
     }
 
-    // 8. gateway bookings get a payment intent inside the same tx.
-    let intent;
-    if (input.payment_method === "gateway") {
-      const intentId = paymentsRepository.insertPaymentIntent({
-        orderId,
-        amountCents: total,
-        gatewayRef: `SIM-PI-${randomUUID()}`,
+    // 8. outbox event, same tx — for cash only. A gateway booking is announced once its payment
+    //    intent exists (the saga in placeBooking).
+    if (input.payment_method !== "gateway") {
+      insertEvent("booking.status_changed", "order", orderId, {
+        order_id: orderId,
+        from: null,
+        to: "awaiting",
+        customer_id: customerId,
+        provider_id: input.provider_id,
+        actor_role: "customer",
       });
-      intent = paymentsRepository.findIntentById(intentId);
     }
-
-    // 9. outbox event, same tx.
-    insertEvent("booking.status_changed", "order", orderId, {
-      order_id: orderId,
-      from: null,
-      to: "awaiting",
-      customer_id: customerId,
-      provider_id: input.provider_id,
-      actor_role: "customer",
-    });
 
     const order = repository.findOrderById(orderId);
     return {
       statusCode: 201,
-      body: { order: toPublicOrder(order), otp, payment_intent: publicIntent(intent) },
+      body: { order: toPublicOrder(order), otp },
     };
   }, customerId);
 
@@ -260,23 +322,12 @@ export function completeBooking(orderId, providerId, otp) {
       throw new ConflictError(`cannot complete booking from status '${fresh.status}'`);
     }
 
-    if (order.payment_method === "gateway") {
-      paymentsRepository.creditBalance(providerId, earnings);
-      paymentsRepository.insertTransaction({
-        orderId, customerId: order.customer_id, providerId,
-        kind: "payout_credit", amountCents: earnings, method: "gateway",
-      });
-    } else {
-      paymentsRepository.addCommissionOwed(providerId, commission);
-      paymentsRepository.insertTransaction({
-        orderId, customerId: order.customer_id, providerId,
-        kind: "commission_owed", amountCents: commission, method: "cod",
-      });
-    }
-
+    // The wallet credit (gateway) or commission owed (COD) is payment-service's: it applies this
+    // event exactly once (dedupe on event_id). The completion itself stays exactly-once here.
     insertEvent("booking.completed", "order", orderId, {
       order_id: orderId, total_cents: order.total_cents, commission_cents: commission,
       provider_earnings_cents: earnings, customer_id: order.customer_id, provider_id: providerId,
+      payment_method: order.payment_method,
     });
     insertEvent("booking.status_changed", "order", orderId, {
       order_id: orderId, from: "started", to: "completed",
@@ -302,12 +353,13 @@ export function cancelBooking(orderId, customerId) {
     let refunded = false;
     if (order.payment_status === "paid") {
       repository.markRefunded(orderId);
-      paymentsRepository.insertTransaction({
-        orderId, customerId, providerId: order.provider_id,
-        kind: "refund", amountCents: order.total_cents, method: "gateway", status: "refunded",
-      });
       refunded = true;
     }
+    // payment-service cancels an unpaid intent, and records the refund for a paid one.
+    insertEvent("booking.cancelled", "order", orderId, {
+      order_id: orderId, customer_id: customerId, provider_id: order.provider_id,
+      total_cents: order.total_cents, payment_method: order.payment_method, refunded,
+    });
 
     insertEvent("booking.status_changed", "order", orderId, {
       order_id: orderId, from: order.status, to: "cancelled",
@@ -351,12 +403,10 @@ export function getBooking(orderId, auth) {
   const order = repository.findOrderById(orderId);
   if (!order) throw new NotFoundError(`booking ${orderId} not found`);
   assertParticipant(order, auth);
-  const intent = paymentsRepository.findIntentByOrderId(orderId);
   const out = {
     ...toPublicOrder(order),
     items: repository.listOrderItems(orderId),
     slot_times: repository.heldSlotTimes(order.provider_id, order.service_date).filter((s) => s), // advisory
-    payment_intent: publicIntent(intent),
   };
   // OTP is the proof-of-presence code the customer reads to the provider — customer-only.
   if (auth.role === "customer") out.otp = order.otp;

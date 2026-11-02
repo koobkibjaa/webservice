@@ -128,7 +128,7 @@ test("booking lifecycle", async (t) => {
     assert.equal(restart.status, 409);
   });
 
-  await t.test("OTP-gated complete: wrong 409, missing 400, correct 200; wallet credited exactly once", async () => {
+  await t.test("OTP-gated complete: wrong 409, missing 400, correct 200; one booking.completed event", async () => {
     const wrongOtp = await call(complete.POST, { token: provider.token, params: { id: "8001" }, body: { otp: 111111 } });
     assert.equal(wrongOtp.status, 409);
     assert.match(wrongOtp.body.error, /incorrect OTP/);
@@ -143,14 +143,47 @@ test("booking lifecycle", async (t) => {
     const event = getDb().prepare("SELECT * FROM events WHERE type = 'booking.completed' AND aggregate_id = 8001").get();
     assert.ok(event, "expected a booking.completed outbox event");
 
+    // payment-service turns this event into the wallet movement, so it must carry the split.
     // COD: commission is owed by the provider. total = 64200, commission = round(64200*0.15) = 9630.
-    const owedAfter = getDb().prepare("SELECT commission_owed_cents AS c FROM provider_wallets WHERE provider_id = ?").get(provider.id).c;
-    assert.equal(owedAfter, 9630);
+    const p = JSON.parse(event.payload_json);
+    assert.equal(p.payment_method, "cod");
+    assert.equal(p.commission_cents, 9630);
+    assert.equal(p.provider_id, provider.id);
 
     const second = await call(complete.POST, { token: provider.token, params: { id: "8001" }, body: { otp: firstOtp } });
     assert.equal(second.status, 409, "a second complete is rejected");
-    const owedStill = getDb().prepare("SELECT commission_owed_cents AS c FROM provider_wallets WHERE provider_id = ?").get(provider.id).c;
-    assert.equal(owedStill, 9630, "wallet unchanged — credited exactly once");
+    const events = getDb().prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'booking.completed' AND aggregate_id = 8001").get().n;
+    assert.equal(events, 1, "still one booking.completed — the wallet can only be credited once");
+  });
+
+  await t.test("SAGA: payment-service unreachable -> 503, the order is cancelled and its slot released", async () => {
+    // Under test there is no payment-service, so step 2 of the saga fails and step 3b compensates.
+    const res = await call(bookings.POST, {
+      token: customer.token,
+      body: {
+        provider_id: provider.id, address_id: addressId, service_date: date2,
+        starting_time: "15:00", items: [{ service_id: SERVICE_ID, quantity: 1 }], payment_method: "gateway",
+      },
+    });
+    assert.equal(res.status, 503);
+    assert.match(res.body.error, /slot was released/);
+
+    const order = getDb().prepare("SELECT * FROM orders WHERE payment_method = 'gateway' ORDER BY id DESC LIMIT 1").get();
+    assert.equal(order.status, "cancelled", "compensated: the order is cancelled");
+    assert.equal(slotHoldCount(provider.id, date2, "15:00"), 0, "compensated: the slot is free again");
+    const announced = getDb().prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'booking.status_changed' AND aggregate_id = ?").get(order.id).n;
+    assert.equal(announced, 0, "the booking was never announced to the provider");
+    const cancelled = getDb().prepare("SELECT payload_json FROM events WHERE type = 'booking.cancelled' AND aggregate_id = ?").get(order.id);
+    assert.equal(JSON.parse(cancelled.payload_json).reason, "payment_setup_failed");
+
+    const cash = await call(bookings.POST, {
+      token: customer.token,
+      body: {
+        provider_id: provider.id, address_id: addressId, service_date: date2,
+        starting_time: "15:00", items: [{ service_id: SERVICE_ID, quantity: 1 }], payment_method: "cod",
+      },
+    });
+    assert.equal(cash.status, 201, "the released slot can be booked");
   });
 
   await t.test("cancel releases slot_holds; a cancelled slot is bookable again; cancel a completed booking -> 409", async () => {

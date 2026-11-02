@@ -2,13 +2,18 @@ export const dynamic = "force-dynamic";
 
 import { redirect } from "next/navigation";
 import { getSession } from "#lib/http/session.js";
-import * as payments from "#lib/modules/payments/service.js";
+import { fetchAsUser } from "#lib/http/remote.js";
+import { config } from "#lib/config.js";
 import { money } from "../../../_ui/format.js";
 
-export default function WalletPage() {
+// The wallet is payment-service's: read it over HTTP as the signed-in provider.
+export default async function WalletPage() {
   const session = getSession();
   if (!session || session.role !== "provider") redirect("/provider/login");
-  const wallet = payments.getWallet(session.sub);
+  const wallet = await fetchAsUser(`${config.paymentServiceUrl}/api/provider/wallet`);
+  if (!wallet) {
+    return <div><h1>Wallet</h1><p className="muted">The wallet is unavailable right now. Try again shortly, or sign out and in again.</p></div>;
+  }
 
   return (
     <div>

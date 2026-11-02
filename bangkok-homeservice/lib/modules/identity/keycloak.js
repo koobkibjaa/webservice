@@ -56,6 +56,17 @@ async function provision(subject, username, password) {
   logger.info({ username }, "keycloak: user provisioned");
 }
 
+// The monolith's own token (client-credentials grant) for calling the extracted services' internal
+// routes. Its service account holds the internal-caller role. Cached until 30s before it expires.
+let serviceTokenCache = null;
+export async function serviceToken() {
+  if (serviceTokenCache && serviceTokenCache.expiresAt > Date.now() + 30_000) return serviceTokenCache.token;
+  const res = await tokenRequest({ grant_type: "client_credentials" });
+  if (res.status !== 200) throw new Error(`service token: ${res.status} ${res.body.error ?? ""}`);
+  serviceTokenCache = { token: res.body.access_token, expiresAt: Date.now() + res.body.expires_in * 1000 };
+  return serviceTokenCache.token;
+}
+
 // Returns { access_token, expires_in } or null.
 export async function keycloakTokenFor(subject, password) {
   if (config.isTest) return null; // the in-process suite runs without Keycloak

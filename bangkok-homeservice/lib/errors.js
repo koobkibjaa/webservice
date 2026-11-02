@@ -44,3 +44,11 @@ export class ConflictError extends AppError {
     this.name = "ConflictError";
   }
 }
+
+// A service this monolith depends on (since the extraction) did not answer.
+export class ServiceUnavailableError extends AppError {
+  constructor(message = "service unavailable") {
+    super(503, message);
+    this.name = "ServiceUnavailableError";
+  }
+}

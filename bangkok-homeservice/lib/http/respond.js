@@ -6,8 +6,9 @@
 // them in-process, while behaving identically inside the Next server.
 //
 // Every route handler throws AppError (or a subclass) on failure, so the JSON error shape is
-// guaranteed consistent across all eight contexts: { error, requestId, details? }. 5xx bodies are
-// scrubbed to "internal server error" and logged at error level; 4xx are logged at warn.
+// guaranteed consistent across all eight contexts: { error, requestId, details? }. Unexpected
+// 5xx bodies are scrubbed to "internal server error"; a deliberate AppError 5xx (503) keeps its
+// message. 5xx are logged at error level; 4xx at warn.
 import { AppError } from "../errors.js";
 import { logger } from "../logger.js";
 
@@ -34,10 +35,14 @@ export function toResponse(err, requestId) {
     body.details = err.details;
   }
 
-  if (statusCode >= 500) {
+  if (statusCode >= 500 && !(err instanceof AppError)) {
     logger.error({ requestId, statusCode, err: err.stack || String(err) }, "unhandled error");
     body.error = "internal server error";
     delete body.details;
+  } else if (statusCode >= 500) {
+    // A deliberate 5xx (e.g. 503 when payment-service is down): logged, but the message is ours
+    // and safe to show.
+    logger.error({ requestId, statusCode, err: err.message }, "request failed");
   } else {
     logger.warn({ requestId, statusCode, err: err.message }, "request error");
   }
