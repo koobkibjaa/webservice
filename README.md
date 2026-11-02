@@ -169,6 +169,89 @@ curl -s -w ' [%{http_code}]\n' localhost:8080/api/jobs/1 -H "authorization: Bear
 Fixed in `bangkok-homeservice/lib/modules/bidding/service.js` (`getJob`); regression tests in
 `bangkok-homeservice/test/bidding.test.js`.
 
+## Area D — survive failure: how to check it
+
+The call across the seam is the monolith's `POST /internal/payment-intents` to payment-service,
+made while it places a gateway-paid booking (`bangkok-homeservice/lib/modules/booking/paymentClient.js`):
+a **2 s timeout** per attempt, **up to 5 attempts** on a timeout, network error or 5xx (never on a
+4xx), **exponential backoff with jitter** (500 ms doubled each time, capped at 4 s, half of each
+step random), and one **`Idempotency-Key`** (`place-booking-<order id>`) on every attempt.
+payment-service claims the key, writes the intent and stores the reply in one transaction
+(`payment-service/app/db.py`, `create_intent`), so a retried write is saved once.
+
+**Fault switches** (`payment-service/app/faults.py`), flags the service reads before it replies;
+reachable only inside the network:
+
+```bash
+docker compose exec payment-service python -m app.faults lost_reply 1   # write, then lose the reply
+docker compose exec payment-service python -m app.faults slow 1 5       # reply after 5 s (> 2 s timeout)
+docker compose exec payment-service python -m app.faults outage 3       # fail every call for 3 s
+docker compose exec payment-service python -m app.faults reset
+docker compose exec payment-service python -m app.faults                # show the switches
+```
+
+### Demo script: `scripts/beat2-failure-recovery.sh`
+
+```bash
+bash scripts/beat2-failure-recovery.sh
+```
+
+Expected output (order ids, timings and how many retries the outage needs differ), exit code 0:
+
+```
+== Fault 1: the reply is lost after the write (lost_reply 1)
+    POST /api/bookings -> HTTP 201 in 0.49s, order #8018
+      attempt 1: "HTTP 500" after 9 ms -> failed, retrying
+      attempt 2: 201 after 11 ms -> succeeded
+    PASS  booking answer                     201
+    PASS  order status in the monolith       awaiting
+    PASS  payment intents for #8018          1
+
+== Fault 2: the reply is slower than the 2 s timeout (slow 1, 5 s)
+    POST /api/bookings -> HTTP 201 in 2.52s, order #8019
+      attempt 1: "timeout after 2000 ms" after 2001 ms -> failed, retrying
+      attempt 2: 201 after 11 ms -> succeeded
+    PASS  ...                                        (201, awaiting, 1 intent)
+
+== Fault 3: payment-service fails for a 3 s window (outage 3)
+      attempt 1..3: "HTTP 503" -> failed, retrying
+      attempt 4: 201 -> succeeded
+    PASS  ...                                        (201, awaiting, 1 intent)
+
+== Beyond the retries: a 30 s outage -> the saga compensates
+      attempt 1..5: "HTTP 503" -> ... giving up
+    PASS  booking answer                     503
+    PASS  order status in the monolith       cancelled
+    PASS  payment intents for #8021          0
+
+payment-service's side (the Idempotency-Key at work):
+        1 "msg": "fault: reply lost after the write"
+        1 "msg": "idempotent replay", "order_id": 8018
+        ...
+All checks passed.
+```
+
+### The race: payment-gateway callbacks at the same instant
+
+The README of the inherited system names the payment-webhook race ("the real product has no
+idempotency and double-processes retries"). The monolith was protected by SQLite's single writer
+lock; payment-service runs callbacks truly in parallel on Postgres, so its webhook holds on its own:
+the event id is claimed with `INSERT ... ON CONFLICT DO NOTHING`, the intent row is locked
+(`SELECT ... FOR UPDATE`) and flipped with a conditional `UPDATE`. The test releases 25 requests at
+once with a barrier, twice:
+
+```bash
+bash scripts/race-webhook.sh
+# burst A on #8016, 25 x the same gateway_event_id: {'replayed': 24, 'settled': 1}
+# burst B on #8017, 25 x different event ids:      {'already_settled': 24, 'settled': 1}
+#   PASS  A: charges for #8016                         1
+#   PASS  A: payment.succeeded events for #8016        1
+#   PASS  A: webhook_events rows for the repeated id   1
+#   PASS  B: charges for #8017                         1
+#   PASS  B: payment.succeeded events for #8017        1
+#   PASS  B: requests that settled                     1
+```
+
 ## Tests
 
 ```bash

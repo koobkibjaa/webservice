@@ -4,6 +4,7 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY tests ./tests
 RUN useradd --system --uid 1001 svc
 USER svc
 EXPOSE 8000
