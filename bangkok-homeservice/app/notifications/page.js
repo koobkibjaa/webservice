@@ -1,35 +1,20 @@
 export const dynamic = "force-dynamic";
 
 import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
 import { getSession } from "#lib/http/session.js";
+import { fetchAsUser } from "#lib/http/remote.js";
 import { config } from "#lib/config.js";
 import { ActionButton } from "../_ui/client.js";
 
 // Notifications are owned by notification-service now, so this page reads them over HTTP with the
 // user's own Keycloak token (the kc_token cookie set at login) instead of calling a service module
 // in-process. If the service is down, or there is no Keycloak token, the rest of the monolith keeps
-// working and only this page degrades.
-async function fetchNotifications() {
-  const token = cookies().get("kc_token")?.value;
-  if (!token) return null;
-  try {
-    const res = await fetch(`${config.notificationServiceUrl}/api/notifications`, {
-      headers: { authorization: `Bearer ${token}` },
-      cache: "no-store",
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
+// working and only this page degrades. What this page needs from the reply is pinned down by the
+// Pact contract in contracts/consumer/notification-service.pact.js.
 export default async function NotificationsPage() {
   const session = getSession();
   if (!session) redirect("/login");
-  const list = await fetchNotifications();
+  const list = await fetchAsUser(`${config.notificationServiceUrl}/api/notifications`);
 
   return (
     <div>

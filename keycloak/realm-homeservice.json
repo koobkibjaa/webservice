@@ -391,6 +391,29 @@
       "realmRoles": [
         "internal-caller"
       ]
+    },
+    {
+      "username": "customer-990001",
+      "email": "pact-customer@example.test",
+      "emailVerified": true,
+      "firstName": "Pact",
+      "lastName": "customer",
+      "enabled": true,
+      "attributes": {
+        "app_user_id": [
+          "990001"
+        ],
+        "app_role": [
+          "customer"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${PACT_CUSTOMER_PASSWORD:pact-dev}",
+          "temporary": false
+        }
+      ]
     }
   ],
   "roles": {

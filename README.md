@@ -22,6 +22,9 @@ docker compose down -v --remove-orphans
 | The app (web pages + API, through the gateway) | http://localhost:8080 |
 | RabbitMQ management | http://localhost:15672 (`edemand` / `edemand-dev`) |
 | Keycloak admin console | http://localhost:8180 (`admin` / `admin-dev`), realm `homeservice` |
+| Jaeger (traces) | http://localhost:16686 |
+| Grafana (dashboard "Services: rate, errors, response time") | http://localhost:3000 (opens without login; `admin` / `admin-dev` to edit) |
+| Prometheus | http://localhost:9090 |
 
 **Seeded logins** (password for all: `eDemand-2026!`):
 
@@ -251,6 +254,82 @@ bash scripts/race-webhook.sh
 #   PASS  B: payment.succeeded events for #8017        1
 #   PASS  B: requests that settled                     1
 ```
+
+## Area E — observe and ship: how to check it
+
+**Traces** (OpenTelemetry → Jaeger). The monolith (Next.js spans, `fetch`, RabbitMQ) and both
+services (FastAPI, RabbitMQ, SQL) send spans to Jaeger. A trace crosses both seams: the HTTP call
+to payment-service carries `traceparent`, and an outbox event keeps the trace context of the
+request that wrote it, so its RabbitMQ message continues that trace in the consumer.
+
+**Logs** are JSON in every service and carry `trace_id`, the correlation id that is the same in
+all three services' logs and in Jaeger:
+
+```bash
+docker compose logs monolith payment-service notification-service | grep <trace id>
+```
+
+**Metrics** (Prometheus → Grafana). All three expose the same histogram,
+`http_request_duration_seconds{service, method, route, status}`; the Grafana dashboard shows
+request rate, 5xx error rate and response time (p95, p50) for each service, and a per-route view.
+
+### Demo script: `scripts/beat4-find-the-trace.sh`
+
+```bash
+bash scripts/beat4-find-the-trace.sh
+```
+
+Places one gateway-paid booking with a `traceparent` the script chose, then asks Jaeger for that
+trace. Expected output (ids and counts differ), exit code 0:
+
+```
+   booking #8025 created; trace id fab0a3e606afb6aecd37834d0bbc7c24
+== Jaeger: trace fab0a3e606afb6aecd37834d0bbc7c24
+   services in this one trace: monolith notification-service payment-service
+   operations (count, name):
+           4 INSERT
+           1 publish edemand.events
+           1 fetch POST http://payment-service:8000/internal/payment-intents
+           1 edemand.events receive
+           1 POST /internal/payment-intents
+           1 POST /app/api/bookings/route
+           ...
+   open it: http://localhost:16686/trace/fab0a3e606afb6aecd37834d0bbc7c24
+== The same id in each service's logs (trace_id = correlation id)
+   monolith               "msg":"payment-service call succeeded"
+   payment-service        "msg": "payment intent saved"
+   notification-service   "msg": "event applied"
+  PASS  monolith               is in the trace
+  PASS  payment-service        is in the trace
+  PASS  notification-service   is in the trace
+  PASS  span "POST /internal/payment-intents"
+  PASS  span "publish edemand.events"
+All checks passed.
+```
+
+### Contract tests (Pact), one per new boundary
+
+```bash
+docker compose run --rm contract-tests
+```
+
+The same command runs in CI (`.github/workflows/ci.yml`, with the monolith's unit tests). The
+monolith is the consumer of both new boundaries, so its consumer tests
+(`bangkok-homeservice/contracts/consumer/`) run its real client code against a Pact mock and write
+`pacts/`; `contracts/verify.js` then replays them against the real services, with provider states
+written into their databases and real Keycloak tokens. Expected ending:
+
+```
+Verifying a pact between monolith and payment-service
+  a request for the payment intent of order 990002 ... has a matching body (OK)
+  a request to create the payment intent for order 990001 ... has a matching body (OK)
+Verifying a pact between monolith and notification-service
+  a request for customer 990001's notifications ... has a matching body (OK)
+Both providers honour the monolith's contracts.
+```
+
+If payment-service stopped sending a field the monolith relies on, verification fails with
+`$ -> Actual map is missing the following keys: ...` and exit code 1.
 
 ## Tests
 

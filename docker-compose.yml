@@ -157,6 +157,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-dev}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-monolith-dev-secret}   # read by the realm file
+      PACT_CUSTOMER_PASSWORD: ${PACT_CUSTOMER_PASSWORD:-pact-dev}               # read by the realm file
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     healthcheck:
@@ -165,6 +166,36 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 15
+
+  # ---------- Area E: contract tests ----------
+  # docker compose run --rm contract-tests   (the same command runs in .github/workflows/ci.yml)
+  # The monolith's Pact consumer tests write pacts/, then both services are verified against them.
+  contract-tests:
+    profiles: ["test"]
+    build:
+      context: ./bangkok-homeservice
+      target: test
+    command: ["sh", "contracts/run.sh"]
+    environment:
+      NODE_ENV: test
+      PACT_DIR: /pacts
+      PACT_DO_NOT_TRACK: "true"   # offline: no usage statistics sent anywhere
+      PAYMENT_SERVICE_URL: http://payment-service:8000
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-monolith-dev-secret}
+      PACT_CUSTOMER_PASSWORD: ${PACT_CUSTOMER_PASSWORD:-pact-dev}
+      PAYMENT_DB_URL: postgresql://payments:${PAYMENT_DB_PASSWORD:-payments-dev}@payment-db:5432/payments
+      NOTIFICATION_DB_URL: postgresql://notifications:${NOTIFICATION_DB_PASSWORD:-notifications-dev}@notification-db:5432/notifications
+    volumes:
+      - ./pacts:/pacts
+    depends_on:
+      payment-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
 
   # ---------- Area E: observability ----------
   # Traces: every service sends OTLP to Jaeger, which keeps them in memory.

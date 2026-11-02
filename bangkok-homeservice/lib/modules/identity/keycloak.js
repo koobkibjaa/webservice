@@ -60,6 +60,9 @@ async function provision(subject, username, password) {
 // routes. Its service account holds the internal-caller role. Cached until 30s before it expires.
 let serviceTokenCache = null;
 export async function serviceToken() {
+  // Under test (unit and Pact consumer tests) there is no Keycloak; the calls go to a mock or to
+  // nothing, and the contract only fixes that a Bearer token is sent.
+  if (config.isTest) return "test-service-token";
   if (serviceTokenCache && serviceTokenCache.expiresAt > Date.now() + 30_000) return serviceTokenCache.token;
   const res = await tokenRequest({ grant_type: "client_credentials" });
   if (res.status !== 200) throw new Error(`service token: ${res.status} ${res.body.error ?? ""}`);

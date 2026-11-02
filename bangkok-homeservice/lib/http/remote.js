@@ -1,14 +1,14 @@
-// Server-Component helper: read from an extracted service as the signed-in browser user, with the
-// Keycloak token from the kc_token cookie set at login. Returns the JSON body, or null if there is
-// no token or the service does not answer in time — pages show "unavailable" instead of failing.
-import { cookies } from "next/headers";
-
-export async function fetchAsUser(url) {
-  const token = cookies().get("kc_token")?.value;
+// Reading from an extracted service with a person's Keycloak token.
+//   fetchJson(url, token)  the plain call (also what the Pact consumer test exercises)
+//   fetchAsUser(url)       for Server Components: the signed-in browser user's token, from the
+//                          kc_token cookie set at login
+// Both return the JSON body, or null if there is no token or the service does not answer
+// successfully in time — pages show "unavailable" instead of failing.
+export async function fetchJson(url, token) {
   if (!token) return null;
   try {
     const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       cache: "no-store",
       signal: AbortSignal.timeout(2000),
     });
@@ -16,4 +16,9 @@ export async function fetchAsUser(url) {
   } catch {
     return null;
   }
+}
+
+export async function fetchAsUser(url) {
+  const { cookies } = await import("next/headers");
+  return fetchJson(url, cookies().get("kc_token")?.value);
 }

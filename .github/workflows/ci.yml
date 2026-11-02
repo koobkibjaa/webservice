@@ -1,0 +1,39 @@
+# CI: the same commands the README gives, nothing CI-only.
+#   unit-tests      the monolith's node:test suite (in-memory database, no other services)
+#   contract-tests  docker compose run --rm contract-tests: the monolith's Pact consumer tests write
+#                   the pacts, then payment-service and notification-service are verified against
+#                   them (compose starts the services, their databases, RabbitMQ and Keycloak)
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Monolith test suite
+        working-directory: bangkok-homeservice
+        run: docker compose run --rm --build test
+
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pact consumer tests + provider verification
+        run: docker compose run --rm --build contract-tests
+      - name: The pacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacts
+          path: pacts/
+          if-no-files-found: ignore
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose logs payment-service notification-service keycloak
+      - name: Clean up
+        if: always()
+        run: docker compose --profile test down -v --remove-orphans
