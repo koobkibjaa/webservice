@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS outbox (
   published_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished ON outbox (id) WHERE published_at IS NULL;
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key TEXT PRIMARY KEY,
+  request_hash TEXT NOT NULL,
+  status_code INTEGER,
+  response_json TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 pool = ConnectionPool(config.DATABASE_URL, min_size=1, max_size=8, open=False, kwargs={"row_factory": dict_row})
@@ -109,21 +116,43 @@ def _emit(conn, type_, aggregate_type, aggregate_id, payload):
 
 # ---------- intents (called by the monolith while it places a gateway booking) ----------
 
-def create_intent(order_id, customer_id, provider_id, amount_cents):
-    """Idempotent on order_id: asking twice for the same order returns the same intent, so the
-    monolith may retry a call whose reply it never saw. Returns (intent, created)."""
-    with pool.connection() as conn:
+def create_intent(idempotency_key, order_id, customer_id, provider_id, amount_cents):
+    """Saved once per Idempotency-Key. The key is claimed, the intent written and the reply stored
+    in ONE transaction, so a retry of a call whose reply was lost gets the stored reply back
+    instead of a second write. Two calls racing on one key: the second one's INSERT waits for the
+    first to commit, then finds the key taken and replays. Returns (status_code, intent, replayed)."""
+    request = json.dumps([order_id, customer_id, provider_id, amount_cents])
+    with pool.connection() as conn, conn.transaction():
+        claimed = conn.execute(
+            "INSERT INTO idempotency_keys (key, request_hash) VALUES (%s, md5(%s)) ON CONFLICT (key) DO NOTHING",
+            (idempotency_key, request),
+        ).rowcount
+        if not claimed:
+            seen = conn.execute(
+                "SELECT request_hash = md5(%s) AS same, status_code, response_json FROM idempotency_keys WHERE key = %s",
+                (request, idempotency_key),
+            ).fetchone()
+            if not seen["same"]:
+                raise ApiError(422, "Idempotency-Key was already used for a different request")
+            return seen["status_code"], json.loads(seen["response_json"]), True
+
         row = conn.execute(
             """INSERT INTO payment_intents (order_id, customer_id, provider_id, amount_cents, gateway_ref)
                VALUES (%s, %s, %s, %s, %s) ON CONFLICT (order_id) DO NOTHING RETURNING *""",
             (order_id, customer_id, provider_id, amount_cents, f"SIM-PI-{uuid.uuid4()}"),
         ).fetchone()
-        if row:
-            return public_intent(row), True
-        row = conn.execute("SELECT * FROM payment_intents WHERE order_id = %s", (order_id,)).fetchone()
-    if row["amount_cents"] != amount_cents or row["customer_id"] != customer_id:
-        raise ApiError(409, f"order {order_id} already has a different payment intent")
-    return public_intent(row), False
+        status = 201
+        if row is None:  # a different key for an order that already has an intent
+            row = conn.execute("SELECT * FROM payment_intents WHERE order_id = %s", (order_id,)).fetchone()
+            if row["amount_cents"] != amount_cents or row["customer_id"] != customer_id:
+                raise ApiError(409, f"order {order_id} already has a different payment intent")
+            status = 200
+        intent = public_intent(row)
+        conn.execute(
+            "UPDATE idempotency_keys SET status_code = %s, response_json = %s WHERE key = %s",
+            (status, json.dumps(intent), idempotency_key),
+        )
+    return status, intent, False
 
 
 def find_intent_by_order(order_id):

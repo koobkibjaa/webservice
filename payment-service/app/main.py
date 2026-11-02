@@ -7,16 +7,19 @@
 #   GET  /api/customer/transactions  a customer's transactions
 # Internal routes (not routed by the gateway; only the monolith's service account may call them):
 #   POST /internal/payment-intents             create the intent for a gateway booking
+#                                              (Idempotency-Key required; fault switches apply)
 #   GET  /internal/payment-intents/{order_id}  read it back for the booking detail
+# /faults (GET, POST, POST /reset): the Area D fault switches, in-network only.
 import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import config, consumer, db, publisher
+from . import config, consumer, db, faults, publisher
 from .auth import get_user, require_internal
 from .errors import ApiError
 
@@ -90,7 +93,11 @@ async def webhook(request: Request):
     if request.headers.get("x-webhook-secret") != config.WEBHOOK_SECRET:
         raise ApiError(401, "invalid webhook secret")
     body = await _body(request)
-    result = db.handle_webhook(_text(body, "gateway_event_id"), _text(body, "type"), _text(body, "gateway_ref"), body)
+    # On a worker thread, so concurrent callbacks really run in parallel against Postgres; the
+    # transaction in db.handle_webhook, not the event loop, is what keeps them apart.
+    result = await run_in_threadpool(
+        db.handle_webhook, _text(body, "gateway_event_id"), _text(body, "type"), _text(body, "gateway_ref"), body
+    )
     return {"received": True, **result}
 
 
@@ -100,14 +107,16 @@ async def simulate(request: Request):
     # path, so a double click credits once.
     customer_id = get_user(request, "customer")
     order_id = _positive_int((await _body(request)).get("order_id"), "order_id")
-    intent = db.find_intent_by_order(order_id)
+    intent = await run_in_threadpool(db.find_intent_by_order, order_id)
     if intent is None:
         raise ApiError(404, f"booking {order_id} has no gateway payment")
     if intent["customer_id"] != customer_id:  # object-level authorization
         raise ApiError(403, "you are not the customer on this booking")
     payload = {"gateway_event_id": f"SIM-EVT-{uuid.uuid4()}", "type": "payment_intent.succeeded",
                "gateway_ref": intent["gateway_ref"]}
-    result = db.handle_webhook(payload["gateway_event_id"], payload["type"], payload["gateway_ref"], payload)
+    result = await run_in_threadpool(
+        db.handle_webhook, payload["gateway_event_id"], payload["type"], payload["gateway_ref"], payload
+    )
     return {"ok": True, **result}
 
 
@@ -126,14 +135,46 @@ def customer_transactions(request: Request):
 @app.post("/internal/payment-intents")
 async def create_intent(request: Request):
     require_internal(request)
+    key = request.headers.get("idempotency-key", "").strip()
+    if not key:
+        raise ApiError(400, "Idempotency-Key header is required")
     body = await _body(request)
-    intent, created = db.create_intent(
+    await faults.before_write()
+    status, intent, replayed = await run_in_threadpool(
+        db.create_intent, key,
         _positive_int(body.get("order_id"), "order_id"),
         _positive_int(body.get("customer_id"), "customer_id"),
         _positive_int(body.get("provider_id"), "provider_id"),
         _positive_int(body.get("amount_cents"), "amount_cents"),
     )
-    return JSONResponse(intent, status_code=201 if created else 200)
+    log.info(json.dumps({"msg": "idempotent replay" if replayed else "payment intent saved",
+                         "order_id": intent["order_id"], "idempotency_key": key,
+                         "requestId": request.state.request_id}))
+    faults.after_write()
+    return JSONResponse(intent, status_code=status, headers={"Idempotent-Replayed": str(replayed).lower()})
+
+
+# ---------- fault switches (Area D; in-network only, see faults.py) ----------
+
+@app.get("/faults")
+def get_faults():
+    return faults.snapshot()
+
+
+@app.post("/faults")
+async def set_faults(request: Request):
+    return faults.configure(await _body(request))
+
+
+@app.post("/faults/reset")
+def reset_faults():
+    return faults.reset()
+
+
+@app.exception_handler(faults.LostReply)
+async def lost_reply(request: Request, err: faults.LostReply):
+    # The write is committed; the caller just never hears about it.
+    return PlainTextResponse("Internal Server Error", status_code=500)
 
 
 @app.get("/internal/payment-intents/{order_id}")
