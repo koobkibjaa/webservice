@@ -73,17 +73,26 @@ export function listJobs(auth, { categoryIds } = {}) {
   return repository.listJobsForCustomer(auth.sub).map(publicJob);
 }
 
+// Object-level authorization, the same rule listJobs applies: a customer sees only their own jobs;
+// a provider sees open jobs (the marketplace they bid in) and any job they have bid on; an admin
+// sees all. Without this check any signed-in user could read every job by walking the ids.
 export function getJob(id, auth) {
   const job = repository.findJobById(id);
   if (!job) throw new NotFoundError(`job ${id} not found`);
+  const ownBid = auth.role === "provider" ? repository.findBidByJobAndProvider(id, auth.sub) : null;
+  if (auth.role === "customer" && job.customer_id !== auth.sub) {
+    throw new ForbiddenError("you do not own this job");
+  }
+  if (auth.role === "provider" && job.status !== "open" && !ownBid) {
+    throw new ForbiddenError("this job is no longer open and you did not bid on it");
+  }
   const bidCount = repository.countBidsForJob(id);
 
   let bids;
-  if (auth.role === "customer" && job.customer_id === auth.sub) {
+  if (auth.role === "customer") {
     bids = repository.listBidsForJob(id).map(publicBid);
   } else if (auth.role === "provider") {
-    const own = repository.findBidByJobAndProvider(id, auth.sub);
-    bids = own ? [publicBid(own)] : [];
+    bids = ownBid ? [publicBid(ownBid)] : [];
   } else {
     bids = [];
   }

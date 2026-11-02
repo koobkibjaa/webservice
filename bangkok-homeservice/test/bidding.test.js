@@ -108,4 +108,29 @@ test("bidding", async (t) => {
     const asCustomer = await call(jobDetail.GET, { token: customer.token, params: { id: jobId } });
     assert.equal(asCustomer.body.bids.length, 1, "owner sees all bids");
   });
+
+  await t.test("BOLA: another customer cannot read my job by id (403), the owner still can (200)", async () => {
+    const job = await postJob(customer, "11:00");
+    const jobId = String(job.body.id);
+    const stranger = await registerCustomer();
+
+    const asStranger = await call(jobDetail.GET, { token: stranger.token, params: { id: jobId } });
+    assert.equal(asStranger.status, 403, "a non-owner customer is refused");
+    assert.equal(asStranger.body.job, undefined, "and receives none of the job");
+
+    const asOwner = await call(jobDetail.GET, { token: customer.token, params: { id: jobId } });
+    assert.equal(asOwner.status, 200);
+  });
+
+  await t.test("BOLA: a provider cannot read a closed job they never bid on (403)", async () => {
+    const job = await postJob(customer, "12:00");
+    const jobId = String(job.body.id);
+    const bid = await call(jobBids.POST, { token: fixit.token, params: { id: jobId }, body: { counter_price_cents: 50000, duration_min: 60 } });
+    await call(acceptBid.POST, { token: customer.token, params: { id: jobId, bidId: String(bid.body.id) }, method: "POST" });
+
+    const asWinner = await call(jobDetail.GET, { token: fixit.token, params: { id: jobId } });
+    assert.equal(asWinner.status, 200, "the provider who bid still sees it");
+    const asOutsider = await call(jobDetail.GET, { token: sparkle.token, params: { id: jobId } });
+    assert.equal(asOutsider.status, 403, "a provider who never bid cannot read a booked job");
+  });
 });
