@@ -7,6 +7,8 @@
 # bad ones through the gateway, then tries to touch another customer's record.
 # Needs only bash and curl. Exit code 0 = every check as expected. Safe to run again.
 set -uo pipefail
+# A date N days from today: GNU date (Linux, Git Bash) or BSD date (macOS).
+days_ahead() { date -d "+$1 days" "+$2" 2>/dev/null || date -v+"$1"d "+$2"; }
 
 GATEWAY=${GATEWAY:-http://localhost:8080}
 KEYCLOAK=${KEYCLOAK:-http://localhost:8180}
@@ -24,9 +26,9 @@ login() {  # <role> <email> -> the monolith's own token
 }
 book() {  # <monolith token> <cod|gateway> -> order id of a new booking with Sparkle, first free slot
   local day t id i
-  for i in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-    [ "$(date -d "+$i days" +%u)" -lt 6 ] || continue
-    day=$(date -d "+$i days" +%F)
+  for i in $(seq 2 90); do   # first free weekday slot in the next 90 days
+    [ "$(days_ahead "$i" %u)" -lt 6 ] || continue
+    day=$(days_ahead "$i" %F)
     for t in 09:00 10:30 12:00 13:30 15:00 16:30; do
       id=$(curl -s -X POST "$GATEWAY/api/bookings" -H "authorization: Bearer $1" -H 'content-type: application/json' \
         -d "{\"provider_id\":1,\"address_id\":1,\"service_date\":\"$day\",\"starting_time\":\"$t\",\"items\":[{\"service_id\":2,\"quantity\":1}],\"payment_method\":\"$2\"}" \

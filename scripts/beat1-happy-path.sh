@@ -13,6 +13,8 @@
 #   browser -> gateway -> payment-service / notification-service   (read with the Keycloak token)
 # Needs only bash and curl. Exit code 0 = every check as expected. Safe to run again.
 set -uo pipefail
+# A date N days from today: GNU date (Linux, Git Bash) or BSD date (macOS).
+days_ahead() { date -d "+$1 days" "+$2" 2>/dev/null || date -v+"$1"d "+$2"; }
 
 GATEWAY=${GATEWAY:-http://localhost:8080}
 PASSWORD='eDemand-2026!'
@@ -46,9 +48,9 @@ WALLET_BEFORE=$(curl -s "$GATEWAY/api/provider/wallet" -H "authorization: Bearer
 
 step "2. Nong books Sofa Shampoo with Sparkle, paying by gateway" \
      "gateway -> monolith (order, slot holds) -> payment-service over HTTP (payment intent) -> monolith outbox"
-for i in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ "$(date -d "+$i days" +%u)" -lt 6 ] || continue
-  day=$(date -d "+$i days" +%F)
+for i in $(seq 2 90); do   # first free weekday slot in the next 90 days
+  [ "$(days_ahead "$i" %u)" -lt 6 ] || continue
+  day=$(days_ahead "$i" %F)
   for t in 09:00 10:30 12:00 13:30 15:00 16:30; do
     BOOKING=$(curl -s -w '\n%{http_code}' -X POST "$GATEWAY/api/bookings" -H "authorization: Bearer $C" -H 'content-type: application/json' \
       -d "{\"provider_id\":1,\"address_id\":1,\"service_date\":\"$day\",\"starting_time\":\"$t\",\"items\":[{\"service_id\":2,\"quantity\":1}],\"payment_method\":\"gateway\"}")

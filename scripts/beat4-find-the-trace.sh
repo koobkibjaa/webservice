@@ -9,6 +9,8 @@
 # finds the same id in each service's logs (trace_id is the correlation id).
 # Needs bash, curl and docker compose (run from the repository root). Exit code 0 = all found.
 set -uo pipefail
+# A date N days from today: GNU date (Linux, Git Bash) or BSD date (macOS).
+days_ahead() { date -d "+$1 days" "+$2" 2>/dev/null || date -v+"$1"d "+$2"; }
 
 GATEWAY=${GATEWAY:-http://localhost:8080}
 JAEGER=${JAEGER:-http://localhost:16686}
@@ -20,9 +22,9 @@ C=$(curl -s -X POST "$GATEWAY/api/auth/customer/login" -H 'content-type: applica
 
 echo "== Placing a gateway-paid booking with FixIt, with our own traceparent"
 TRACE=""
-for i in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ "$(date -d "+$i days" +%u)" -lt 6 ] || continue
-  day=$(date -d "+$i days" +%F)
+for i in $(seq 2 90); do   # first free weekday slot in the next 90 days
+  [ "$(days_ahead "$i" %u)" -lt 6 ] || continue
+  day=$(days_ahead "$i" %F)
   for t in 09:00 10:30 12:00 13:30 15:00 16:30; do
     try=$(hex 16)   # a fresh trace id per attempt, so a taken slot (409) is not mixed in
     out=$(curl -s -w '\n%{http_code}' -X POST "$GATEWAY/api/bookings" \
@@ -37,10 +39,15 @@ done
 echo "   booking #$ORDER created; trace id $TRACE"
 
 echo "== Waiting for Jaeger to have every service's spans"
-for _ in $(seq 1 20); do
+# Each service sends its spans in batches every few seconds, so one service's later spans (the
+# monolith's "publish", for one) can arrive after the others: wait for the ones we check below.
+for _ in $(seq 1 30); do
   JSON=$(curl -s "$JAEGER/api/traces/$TRACE")
   SERVICES=$(echo "$JSON" | grep -o '"serviceName":"[^"]*"' | cut -d'"' -f4 | sort -u | tr '\n' ' ')
-  case "$SERVICES" in *monolith*notification-service*payment-service*) break;; esac
+  case "$SERVICES" in *monolith*notification-service*payment-service*)
+    echo "$JSON" | grep -q '"operationName":"publish edemand.events' \
+      && echo "$JSON" | grep -q '"operationName":"POST /internal/payment-intents' && break;;
+  esac
   sleep 1
 done
 

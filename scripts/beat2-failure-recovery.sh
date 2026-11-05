@@ -9,12 +9,17 @@
 # A fourth case shows an outage longer than the retries: the saga gives up and compensates.
 # Needs bash, curl and docker compose (run from the repository root). Exit code 0 = all as expected.
 set -uo pipefail
+# A date N days from today: GNU date (Linux, Git Bash) or BSD date (macOS).
+days_ahead() { date -d "+$1 days" "+$2" 2>/dev/null || date -v+"$1"d "+$2"; }
 
 GATEWAY=${GATEWAY:-http://localhost:8080}
 PASSWORD='eDemand-2026!'
 FAILED=0
 
 fault() { docker compose exec -T payment-service python -m app.faults "$@" >/dev/null; }
+# Never leave a fault switched on, even if the script is stopped half-way (Ctrl-C).
+trap 'fault reset' EXIT
+trap 'exit 130' INT TERM
 intents_for() { docker compose exec -T payment-db psql -U payments -tAc "select count(*) from payment_intents where order_id = $1" | tr -d '[:space:]'; }
 order_status() {
   docker compose exec -T monolith node -e "const D=require('better-sqlite3');const o=new D('/app/data/edemand.db',{readonly:true}).prepare('select status from orders where id=?').get($1);console.log(o?o.status:'none')"
@@ -31,9 +36,9 @@ C=$(curl -s -X POST "$GATEWAY/api/auth/customer/login" -H 'content-type: applica
 # Place a gateway booking with FixIt (provider 2) on the first free slot. Prints "<http status> <order id> <seconds>".
 book() {
   local i day t out status id
-  for i in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ "$(date -d "+$i days" +%u)" -lt 6 ] || continue
-    day=$(date -d "+$i days" +%F)
+  for i in $(seq 2 90); do   # first free weekday slot in the next 90 days
+    [ "$(days_ahead "$i" %u)" -lt 6 ] || continue
+    day=$(days_ahead "$i" %F)
     for t in 09:00 10:30 12:00 13:30 15:00 16:30; do
       out=$(curl -s -w '\n%{http_code} %{time_total}' -X POST "$GATEWAY/api/bookings" -H "authorization: Bearer $C" \
         -H 'content-type: application/json' \
